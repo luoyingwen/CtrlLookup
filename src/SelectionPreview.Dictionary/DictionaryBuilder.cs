@@ -7,7 +7,12 @@ namespace SelectionPreview.Dictionary;
 
 public static class DictionaryBuilder
 {
-    public static int Build(string csvPath, string destination, bool overwrite = false)
+    internal const string EntrySchema = "PRAGMA user_version = 1; CREATE TABLE entry (word TEXT PRIMARY KEY, gloss TEXT NOT NULL) WITHOUT ROWID;";
+
+    public static int Build(string csvPath, string destination, bool overwrite = false) =>
+        BuildStaged(destination, overwrite, staging => Import(csvPath, staging));
+
+    internal static int BuildStaged(string destination, bool overwrite, Func<string, int> import)
     {
         destination = Path.GetFullPath(destination);
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -17,8 +22,8 @@ public static class DictionaryBuilder
         var staging = destination + $".{Guid.NewGuid():N}.tmp";
         try
         {
-            var count = Import(csvPath, staging);
-            if (count == 0) throw new InvalidDataException("No usable English–Chinese entries were found.");
+            var count = import(staging);
+            if (count == 0) throw new InvalidDataException("No usable dictionary entries were found.");
             File.Move(staging, destination, overwrite);
             return count;
         }
@@ -45,7 +50,7 @@ public static class DictionaryBuilder
         using var transaction = connection.BeginTransaction();
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "PRAGMA user_version = 1; CREATE TABLE entry (word TEXT PRIMARY KEY, gloss TEXT NOT NULL) WITHOUT ROWID;";
+        command.CommandText = EntrySchema;
         command.ExecuteNonQuery();
         command.CommandText = "INSERT OR IGNORE INTO entry (word, gloss) VALUES ($word, $gloss)";
         var word = command.Parameters.Add("$word", SqliteType.Text);

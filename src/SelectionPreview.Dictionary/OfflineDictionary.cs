@@ -1,11 +1,15 @@
 using Microsoft.Data.Sqlite;
+using SelectionPreview.Core;
 
 namespace SelectionPreview.Dictionary;
 
 public sealed class OfflineDictionary(string path)
 {
-    public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "SelectionPreview", "dictionary-v1.sqlite");
+    public static string DefaultPath => LocalPath("dictionary-v1.sqlite");
+    public static string ChinesePath => LocalPath("dictionary-zh-v1.sqlite");
+
+    private static string LocalPath(string filename) => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SelectionPreview", filename);
 
     public string? Lookup(string normalizedWord)
     {
@@ -26,4 +30,17 @@ public sealed class OfflineDictionary(string path)
         catch (IOException) { return null; }
         catch (UnauthorizedAccessException) { return null; }
     }
+}
+
+public sealed class OfflineDictionaries(string englishPath, string chinesePath)
+{
+    private readonly OfflineDictionary _english = new(englishPath);
+    private readonly OfflineDictionary _chinese = new(chinesePath);
+
+    public string? Lookup(DictionaryQuery query) => query.Direction switch
+    {
+        LookupDirection.EnglishToChinese => _english.Lookup(query.Term),
+        LookupDirection.ChineseToEnglish => _chinese.Lookup(query.Term),
+        _ => null
+    };
 }

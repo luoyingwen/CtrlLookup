@@ -5,13 +5,13 @@ using SelectionPreview.Dictionary;
 
 namespace SelectionPreview;
 
-/// <summary>Best-effort lookup on its own worker, with at most one queued word.</summary>
+/// <summary>Best-effort lookup on its own worker, with at most one queued query.</summary>
 internal sealed class DictionaryLookup : IDisposable
 {
     private readonly object _gate = new();
-    private readonly OfflineDictionary _dictionary = new(OfflineDictionary.DefaultPath);
+    private readonly OfflineDictionaries _dictionaries = new(OfflineDictionary.DefaultPath, OfflineDictionary.ChinesePath);
     private readonly Action<Probe, string> _completed;
-    private (Probe Probe, string Word)? _pending;
+    private (Probe Probe, DictionaryQuery Query)? _pending;
     private Probe? _current;
     private bool _stopped;
 
@@ -21,13 +21,13 @@ internal sealed class DictionaryLookup : IDisposable
         new Thread(Loop) { IsBackground = true, Name = "SelectionPreview.Dictionary" }.Start();
     }
 
-    public void Submit(Probe probe, string word)
+    public void Submit(Probe probe, DictionaryQuery query)
     {
         lock (_gate)
         {
             if (_stopped) return;
             _current = probe;
-            _pending = (probe, word);
+            _pending = (probe, query);
             Monitor.Pulse(_gate);
         }
     }
@@ -56,7 +56,7 @@ internal sealed class DictionaryLookup : IDisposable
     {
         while (true)
         {
-            (Probe Probe, string Word) job;
+            (Probe Probe, DictionaryQuery Query) job;
             lock (_gate)
             {
                 while (!_stopped && _pending is null) Monitor.Wait(_gate);
@@ -65,7 +65,7 @@ internal sealed class DictionaryLookup : IDisposable
                 _pending = null;
             }
 
-            if (_dictionary.Lookup(job.Word) is not { } gloss) continue;
+            if (_dictionaries.Lookup(job.Query) is not { } gloss) continue;
             lock (_gate)
             {
                 if (_stopped || _current != job.Probe) continue;

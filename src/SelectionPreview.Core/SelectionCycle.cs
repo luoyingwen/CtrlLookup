@@ -22,7 +22,6 @@ public static class SelectionKeys
 public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadius, PixelSize dragRadius, bool activationHeld = true)
 {
     private long _generation;
-    private long _showUntil;
     private long _due;
     private Probe? _pending;
     private Probe? _inFlight;
@@ -33,7 +32,8 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public long Generation => _generation;
     public bool Visible { get; private set; }
-    public bool HasTimedWork => Visible || _pending.HasValue || _inFlight.HasValue;
+    // Keep polling while visible so a missed Ctrl key-up cannot strand a card.
+    public bool NeedsPolling => Visible || _pending.HasValue || _inFlight.HasValue;
 
     public void SetActivationHeld(bool held)
     {
@@ -113,7 +113,6 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public Probe? Advance(long now)
     {
-        if (Visible && now >= _showUntil) Visible = false;
         if (_inFlight is { } running && now >= running.Deadline) _inFlight = null;
         if (_pending is not { } pending || now < _due) return null;
         _pending = null;
@@ -127,11 +126,10 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
         _inFlight = null;
         if (!usable || now >= probe.Deadline) return false;
         Visible = true;
-        _showUntil = now + 4_000;
         return true;
     }
 
-    public bool CanEnrich(Probe probe, long now) => _activationHeld && Visible && now < _showUntil
+    public bool CanEnrich(Probe probe) => _activationHeld && Visible
         && probe.Generation == _generation && probe.Source == _foreground;
 
     private void Schedule(SelectionGesture gesture, PixelPoint start, PixelPoint end, long now, int delay, int clickCount = 0)

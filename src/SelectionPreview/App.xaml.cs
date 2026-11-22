@@ -147,7 +147,7 @@ public partial class App : System.Windows.Application
             _lookup!.Clear();
             _popup!.Clear();
         }
-        if (_cycle.HasTimedWork) _clock.Start();
+        if (_cycle.NeedsPolling) _clock.Start();
         else _clock.Stop();
     }
 
@@ -158,7 +158,7 @@ public partial class App : System.Windows.Application
         if (_cycle!.Complete(probe, snapshot is not null, Now))
         {
             if (!_popup!.Present(snapshot!, probe)) _cycle.Dismiss();
-            else if (EnglishHeadword.FromSelection(snapshot!.Text) is { } word) _lookup!.Submit(probe, word);
+            else if (DictionaryQuery.FromSelection(snapshot!.Text) is { } query) _lookup!.Submit(probe, query);
         }
         Pump();
     }
@@ -167,7 +167,7 @@ public partial class App : System.Windows.Application
     {
         if (!_active) return;
         Pump();
-        if (_cycle!.CanEnrich(probe, Now)) _popup!.ShowMeaning(gloss);
+        if (_cycle!.CanEnrich(probe)) _popup!.ShowMeaning(gloss);
     }
 
     protected override void OnExit(ExitEventArgs e)

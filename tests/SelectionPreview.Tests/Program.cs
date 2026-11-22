@@ -1,3 +1,6 @@
+using System.IO.Compression;
+using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
 using SelectionPreview.Core;
 using SelectionPreview.Dictionary;
 
@@ -56,6 +59,97 @@ var cases = new (string Name, Action Run)[]
             Directory.Delete(temp);
         }
     }),
+    ("lookup direction follows a single English word or a contiguous Han headword", () =>
+    {
+        Equal(new DictionaryQuery(LookupDirection.EnglishToChinese, "week"), DictionaryQuery.FromSelection("WEEK."));
+        Equal(new DictionaryQuery(LookupDirection.ChineseToEnglish, "星期"), DictionaryQuery.FromSelection(" 「 星期。 」\r\n"));
+        foreach (var term in new[] { "电脑", "電腦", "画蛇添足", "行", "𠮷", "〇", new string('字', 32) })
+            Equal(new DictionaryQuery(LookupDirection.ChineseToEnglish, term), DictionaryQuery.FromSelection(term));
+        foreach (var text in new[] { "你好 hello", "阿Q", "中 文", "成\n语", "你好，世界", "https://例子.example", "https://example.com",
+            "週😀", "词２", "「。」", new string('字', 33), "\ud800" })
+            Equal<DictionaryQuery?>(null, DictionaryQuery.FromSelection(text));
+    }),
+    ("CC-CEDICT imports both scripts and keeps the dictionaries independent", () =>
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"SelectionPreview-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        var englishSource = Path.Combine(temp, "en.csv");
+        var chineseSource = Path.Combine(temp, "zh.txt.gz");
+        var english = Path.Combine(temp, "en.sqlite");
+        var chinese = Path.Combine(temp, "zh.sqlite");
+        var dictionaries = new OfflineDictionaries(english, chinese);
+        string? Lookup(string text) => DictionaryQuery.FromSelection(text) is { } query ? dictionaries.Lookup(query) : null;
+        void WriteChinese(string text)
+        {
+            using var file = File.Create(chineseSource);
+            using var gzip = new GZipStream(file, CompressionMode.Compress);
+            using var writer = new StreamWriter(gzip);
+            writer.Write(text);
+        }
+        try
+        {
+            const string header = "# CC-CEDICT\n# https://creativecommons.org/licenses/by-sa/4.0/\n";
+            WriteChinese(header + """
+                電腦 电脑 [dian4 nao3] /computer/CL:臺|台[tai2]/computer/
+                電腦 电脑 [dian4 nao3] /computer/electronic computer/not needed/
+                星期 星期 [xing1 qi1] /week/CL:個|个[ge4]/day of the week/Sunday/
+                畫蛇添足 画蛇添足 [hua4 she2 tian1 zu2] /to overdo it/
+                行 行 [hang2] /row/line/
+                𠮷 𠮷 [ji2] /good luck/
+                本 本 [ben3] /CL:本[ben3]/
+                阿Q 阿Q [A1 Q] /mixed script/
+                """);
+            File.WriteAllText(englishSource, "word,translation\nweek,星期\n");
+            Equal(1, DictionaryBuilder.Build(englishSource, english));
+            Equal("星期", Lookup("WEEK."));
+            Equal<string?>(null, Lookup("电脑"));
+            Equal(false, File.Exists(chinese));
+
+            Equal(7, ChineseDictionaryBuilder.Build(chineseSource, chinese));
+            Equal("computer\nelectronic computer", Lookup("电脑"));
+            Equal(Lookup("电脑"), Lookup("電腦"));
+            Equal("week\nday of the week", Lookup("「星期。」"));
+            Equal("to overdo it", Lookup("画蛇添足"));
+            Equal("row\nline", Lookup("行"));
+            Equal("good luck", Lookup("𠮷"));
+            Equal<string?>(null, Lookup("本"));
+            Equal<string?>(null, Lookup("今天天气很好"));
+            Equal<string?>(null, Lookup("电脑 computer"));
+            Equal("星期", Lookup("WEEK."));
+
+            using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = chinese, Mode = SqliteOpenMode.ReadOnly, Pooling = false
+            }.ToString()))
+            {
+                connection.Open();
+                using var query = connection.CreateCommand();
+                query.CommandText = "SELECT value FROM metadata WHERE key = 'source_sha256'";
+                Equal(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(chineseSource))).ToLowerInvariant(), query.ExecuteScalar() as string);
+                query.CommandText = "SELECT value FROM metadata WHERE key = 'license_url'";
+                Equal("https://creativecommons.org/licenses/by-sa/4.0/", query.ExecuteScalar() as string);
+            }
+
+            WriteChinese(header + "詞 词 [ci2] /word/\nmalformed row\n");
+            try
+            {
+                ChineseDictionaryBuilder.Build(chineseSource, chinese, overwrite: true);
+                throw new Exception("Malformed CC-CEDICT should fail.");
+            }
+            catch (InvalidDataException) { }
+            Equal("week\nday of the week", Lookup("星期"));
+            File.Delete(english);
+            Equal<string?>(null, Lookup("week"));
+            Equal("computer\nelectronic computer", Lookup("电脑"));
+            File.WriteAllText(chinese, "not a database");
+            Equal<string?>(null, Lookup("电脑"));
+        }
+        finally
+        {
+            foreach (var path in new[] { englishSource, chineseSource, english, chinese }) File.Delete(path);
+            Directory.Delete(temp);
+        }
+    }),
     ("lookup results can enrich only the still-visible, current selection", () =>
     {
         Action<SelectionCycle>[] interruptions =
@@ -69,18 +163,18 @@ var cases = new (string Name, Action Run)[]
         {
             var cycle = Cycle();
             var previous = KeyProbe(cycle);
-            Equal(false, cycle.CanEnrich(previous, 70));
+            Equal(false, cycle.CanEnrich(previous));
             Equal(true, cycle.Complete(previous, true, 100));
-            Equal(true, cycle.CanEnrich(previous, 150));
+            Equal(true, cycle.CanEnrich(previous));
             interrupt(cycle);
-            Equal(false, cycle.CanEnrich(previous, 260));
+            Equal(false, cycle.CanEnrich(previous));
             var current = KeyProbe(cycle, 300);
             Equal(true, cycle.Complete(current, true, 400));
-            Equal(false, cycle.CanEnrich(previous, 500));
-            Equal(true, cycle.CanEnrich(current, 4_399));
-            Equal(false, cycle.CanEnrich(current, 4_400)); // Even before the timer hides the card.
-            cycle.Advance(4_400);
-            Equal(false, cycle.Visible);
+            Equal(false, cycle.CanEnrich(previous));
+            cycle.Advance(60_000);
+            Equal(true, cycle.CanEnrich(current));
+            cycle.SetActivationHeld(false);
+            Equal(false, cycle.CanEnrich(current));
         }
     }),
     ("gestures do not query until activation is held from the start", () =>
@@ -94,7 +188,7 @@ var cases = new (string Name, Action Run)[]
         Click(cycle, 180, start);
         cycle.KeyDown(KeyAction.Selection, 260);
         Equal<Probe?>(null, cycle.Advance(320));
-        Equal(false, cycle.HasTimedWork);
+        Equal(false, cycle.NeedsPolling);
 
         cycle.LeftDown(1, start, false, 350);
         cycle.SetActivationHeld(true);
@@ -118,7 +212,7 @@ var cases = new (string Name, Action Run)[]
         cycle.SetActivationHeld(false);
         cycle.SetActivationHeld(true);
         Equal(false, cycle.Complete(inFlight, true, 200));
-        Equal(false, cycle.HasTimedWork);
+        Equal(false, cycle.NeedsPolling);
     }),
     ("activation release hides the preview and resets consecutive clicks", () =>
     {
@@ -130,7 +224,7 @@ var cases = new (string Name, Action Run)[]
         Equal(true, cycle.Complete(probe, true, 175));
         cycle.SetActivationHeld(false);
         Equal(false, cycle.Visible);
-        Equal(false, cycle.HasTimedWork);
+        Equal(false, cycle.NeedsPolling);
         cycle.SetActivationHeld(true);
         Click(cycle, 240, point);
         Equal<Probe?>(null, cycle.Advance(292));
@@ -153,7 +247,7 @@ var cases = new (string Name, Action Run)[]
         cycle.LeftDown(1, new(20, 20), false, 0);
         cycle.LeftUp(new(22, 22), 30);
         Equal<Probe?>(null, cycle.Advance(90));
-        Equal(false, cycle.HasTimedWork);
+        Equal(false, cycle.NeedsPolling);
     }),
     ("drag waits for release and settle", () =>
     {
@@ -345,16 +439,19 @@ var cases = new (string Name, Action Run)[]
         keys.OnPacket(0x12, 0, 2);
         Equal<KeyAction?>(KeyAction.Dismiss, keys.OnPacket(0x25, 0, 0));
     }),
-    ("visibility expires exactly four seconds after completion", () =>
+    ("preview stays visible while Ctrl is held and hides as soon as it is released", () =>
     {
         var cycle = Cycle();
         var probe = KeyProbe(cycle);
         Equal(true, cycle.Complete(probe, true, 100));
-        cycle.Advance(4_099);
+        cycle.Advance(60_000);
         Equal(true, cycle.Visible);
-        cycle.Advance(4_100);
+        Equal(true, cycle.NeedsPolling); // Still poll the physical Ctrl state.
+        cycle.SetActivationHeld(false);
         Equal(false, cycle.Visible);
-        Equal(false, cycle.HasTimedWork);
+        Equal(false, cycle.NeedsPolling);
+        cycle.SetActivationHeld(true);
+        Equal(false, cycle.Visible);
     }),
     ("late and missing provider results never show", () =>
     {
@@ -369,9 +466,9 @@ var cases = new (string Name, Action Run)[]
     {
         var cycle = Cycle();
         _ = KeyProbe(cycle);
-        Equal(true, cycle.HasTimedWork);
+        Equal(true, cycle.NeedsPolling);
         cycle.Advance(450);
-        Equal(false, cycle.HasTimedWork);
+        Equal(false, cycle.NeedsPolling);
     }),
     ("superseded or reused foreground cannot show an old probe", () =>
     {

@@ -1,28 +1,47 @@
 param([switch]$Force)
 
 $ErrorActionPreference = 'Stop'
-$database = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'SelectionPreview\dictionary-v1.sqlite'
-if ((Test-Path -LiteralPath $database) -and -not $Force) {
-    Write-Output "Dictionary already installed: $database (use -Force to replace)."
+$folder = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'SelectionPreview'
+$revision = '39cfb9672c0906b63569e0453c2e6abfb9ab182a'
+$dictionaries = @(
+    @{
+        Direction = 'english'; Name = 'ECDICT'; Size = '66 MB'; File = 'dictionary-v1.sqlite'; Extension = '.csv'
+        Uri = "https://raw.githubusercontent.com/skywind3000/ECDICT/$revision/ecdict.csv"
+        Sha256 = 'd1ecbdf9ee2b920afb6f430ca6b6bb9f559588cf0dff86e04bd255f9390843cc'
+    }
+    @{
+        Direction = 'chinese'; Name = 'CC-CEDICT'; Size = '4 MB'; File = 'dictionary-zh-v1.sqlite'; Extension = '.txt.gz'
+        Uri = 'https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz'
+    }
+)
+$pending = @(foreach ($dictionary in $dictionaries) {
+    if ($Force -or -not (Test-Path -LiteralPath (Join-Path $folder $dictionary.File))) { $dictionary }
+})
+if ($pending.Count -eq 0) {
+    Write-Output 'Both dictionaries are already installed (use -Force to replace).'
     return
 }
 
-$revision = '39cfb9672c0906b63569e0453c2e6abfb9ab182a'
-$sha256 = 'd1ecbdf9ee2b920afb6f430ca6b6bb9f559588cf0dff86e04bd255f9390843cc'
-$uri = "https://raw.githubusercontent.com/skywind3000/ECDICT/$revision/ecdict.csv"
-$tempCsv = Join-Path ([IO.Path]::GetTempPath()) ("SelectionPreview-ecdict-{0}.csv" -f [guid]::NewGuid().ToString('N'))
 $project = Join-Path $PSScriptRoot 'tools\SelectionPreview.DictionarySetup\SelectionPreview.DictionarySetup.csproj'
-try {
-    Write-Output 'Downloading ECDICT (approximately 66 MB)...'
-    Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $tempCsv
-    if ((Get-FileHash -LiteralPath $tempCsv -Algorithm SHA256).Hash -ne $sha256) {
-        throw 'ECDICT checksum mismatch. The installed dictionary was not changed.'
+dotnet restore $project --locked-mode
+if ($LASTEXITCODE) { throw 'Dictionary setup dependencies could not be restored.' }
+$mode = if ($Force) { '--replace' } else { '--install' }
+$failed = @()
+foreach ($dictionary in $pending) {
+    $tempFile = Join-Path ([IO.Path]::GetTempPath()) ('SelectionPreview-{0}{1}' -f [guid]::NewGuid().ToString('N'), $dictionary.Extension)
+    try {
+        Write-Output "Downloading $($dictionary.Name) (approximately $($dictionary.Size))..."
+        Invoke-WebRequest -UseBasicParsing -Uri $dictionary.Uri -OutFile $tempFile
+        if ($dictionary.Sha256 -and (Get-FileHash -LiteralPath $tempFile -Algorithm SHA256).Hash -ne $dictionary.Sha256) {
+            throw 'Source checksum mismatch. The installed dictionary was not changed.'
+        }
+        dotnet run --project $project -c Release --no-restore -- $dictionary.Direction $tempFile $mode
+        if ($LASTEXITCODE) { throw 'Dictionary installation failed.' }
+    } catch {
+        $failed += $dictionary.Name
+        Write-Warning "$($dictionary.Name): $($_.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $tempFile) { Remove-Item -LiteralPath $tempFile }
     }
-    dotnet restore $project --locked-mode
-    if ($LASTEXITCODE) { throw 'Dictionary setup dependencies could not be restored.' }
-    $mode = if ($Force) { '--replace' } else { '--install' }
-    dotnet run --project $project -c Release --no-restore -- $tempCsv $mode
-    if ($LASTEXITCODE) { throw 'Dictionary installation failed.' }
-} finally {
-    if (Test-Path -LiteralPath $tempCsv) { Remove-Item -LiteralPath $tempCsv }
 }
+if ($failed.Count -gt 0) { throw "Could not install: $($failed -join ', ')." }
