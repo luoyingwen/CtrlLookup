@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <Product>CtrlLookup</Product>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Preview.ico</ApplicationIcon>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CtrlLookup.Dictionary\CtrlLookup.Dictionary.csproj" />
+    <ProjectReference Include="..\CtrlLookup.Core\CtrlLookup.Core.csproj" />
+    <PackageReference Include="FlaUI.UIA3" Version="5.0.0" />
+    <EmbeddedResource Include="Preview.ico" LogicalName="CtrlLookup.Preview.ico" />
+  </ItemGroup>
+</Project>

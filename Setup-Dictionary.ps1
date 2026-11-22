@@ -1,6 +1,7 @@
 param([switch]$Force)
 
 $ErrorActionPreference = 'Stop'
+# Match the app's legacy directory so upgrades can reuse installed dictionaries.
 $folder = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'SelectionPreview'
 $revision = '39cfb9672c0906b63569e0453c2e6abfb9ab182a'
 $dictionaries = @(
@@ -22,13 +23,13 @@ if ($pending.Count -eq 0) {
     return
 }
 
-$project = Join-Path $PSScriptRoot 'tools\SelectionPreview.DictionarySetup\SelectionPreview.DictionarySetup.csproj'
+$project = Join-Path $PSScriptRoot 'tools\CtrlLookup.DictionarySetup\CtrlLookup.DictionarySetup.csproj'
 dotnet restore $project --locked-mode
 if ($LASTEXITCODE) { throw 'Dictionary setup dependencies could not be restored.' }
 $mode = if ($Force) { '--replace' } else { '--install' }
 $failed = @()
 foreach ($dictionary in $pending) {
-    $tempFile = Join-Path ([IO.Path]::GetTempPath()) ('SelectionPreview-{0}{1}' -f [guid]::NewGuid().ToString('N'), $dictionary.Extension)
+    $tempFile = Join-Path ([IO.Path]::GetTempPath()) ('CtrlLookup-{0}{1}' -f [guid]::NewGuid().ToString('N'), $dictionary.Extension)
     try {
         Write-Output "Downloading $($dictionary.Name) (approximately $($dictionary.Size))..."
         Invoke-WebRequest -UseBasicParsing -Uri $dictionary.Uri -OutFile $tempFile

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CtrlLookup.Core\CtrlLookup.Core.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.34" />
+  </ItemGroup>
+</Project>

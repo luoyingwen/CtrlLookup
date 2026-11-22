@@ -1,6 +1,6 @@
-# ECDICT dictionary source
+# ECDICT (English–Chinese dictionary)
 
-The optional dictionary is generated locally by Setup-Dictionary.ps1 using ecdict.csv from https://github.com/skywind3000/ECDICT at 39cfb9672c0906b63569e0453c2e6abfb9ab182a. The CSV and generated database are not redistributed with this repository.
+The optional English-to-Chinese database is generated locally by [`Setup-Dictionary.ps1`](Setup-Dictionary.ps1) from `ecdict.csv` at [ECDICT revision `39cfb967`](https://github.com/skywind3000/ECDICT/tree/39cfb9672c0906b63569e0453c2e6abfb9ab182a). The CSV and generated database are not redistributed with this repository.
 
 Pinned upstream LICENSE:
 
