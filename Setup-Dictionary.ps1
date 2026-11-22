@@ -16,16 +16,23 @@ $dictionaries = @(
     }
 )
 $pending = @(foreach ($dictionary in $dictionaries) {
-    if ($Force -or -not (Test-Path -LiteralPath (Join-Path $folder $dictionary.File))) { $dictionary }
+    if ($Force -or -not (Test-Path -LiteralPath (Join-Path $folder $dictionary.File) -PathType Leaf)) { $dictionary }
 })
 if ($pending.Count -eq 0) {
     Write-Output 'Both dictionaries are already installed (use -Force to replace).'
     return
 }
 
-$project = Join-Path $PSScriptRoot 'tools\CtrlLookup.DictionarySetup\CtrlLookup.DictionarySetup.csproj'
-dotnet restore $project --locked-mode
-if ($LASTEXITCODE) { throw 'Dictionary setup dependencies could not be restored.' }
+$installer = Join-Path $PSScriptRoot 'dictionary-setup\CtrlLookup.DictionarySetup.exe'
+$useBundledInstaller = Test-Path -LiteralPath $installer -PathType Leaf
+if (-not $useBundledInstaller) {
+    $project = Join-Path $PSScriptRoot 'tools\CtrlLookup.DictionarySetup\CtrlLookup.DictionarySetup.csproj'
+    if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
+        throw 'Dictionary installer is missing. Use the complete CtrlLookup publish folder or run this script from the source checkout.'
+    }
+    dotnet restore $project --locked-mode
+    if ($LASTEXITCODE) { throw 'Dictionary setup dependencies could not be restored.' }
+}
 $mode = if ($Force) { '--replace' } else { '--install' }
 $failed = @()
 foreach ($dictionary in $pending) {
@@ -36,7 +43,11 @@ foreach ($dictionary in $pending) {
         if ($dictionary.Sha256 -and (Get-FileHash -LiteralPath $tempFile -Algorithm SHA256).Hash -ne $dictionary.Sha256) {
             throw 'Source checksum mismatch. The installed dictionary was not changed.'
         }
-        dotnet run --project $project -c Release --no-restore -- $dictionary.Direction $tempFile $mode
+        if ($useBundledInstaller) {
+            & $installer $dictionary.Direction $tempFile $mode
+        } else {
+            dotnet run --project $project -c Release --no-restore -- $dictionary.Direction $tempFile $mode
+        }
         if ($LASTEXITCODE) { throw 'Dictionary installation failed.' }
     } catch {
         $failed += $dictionary.Name

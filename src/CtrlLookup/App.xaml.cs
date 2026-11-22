@@ -38,6 +38,8 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        DictionarySetupPrompt.ShowIfMissing();
+
         // A narrow glyph can be selected with less movement than a Windows drag-and-drop gesture.
         _cycle = new SelectionCycle((int)Native.GetDoubleClickTime(),
             new(Math.Max(1, Native.GetSystemMetrics(36) / 2), Math.Max(1, Native.GetSystemMetrics(37) / 2)),
