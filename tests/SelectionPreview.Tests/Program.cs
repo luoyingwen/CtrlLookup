@@ -1,7 +1,152 @@
 using SelectionPreview.Core;
+using SelectionPreview.Dictionary;
 
 var cases = new (string Name, Action Run)[]
 {
+    ("dictionary eligibility accepts one word and preserves internal punctuation", () =>
+    {
+        Equal("week", EnglishHeadword.FromSelection("  (WEEK.)\r\n"));
+        Equal("don't", EnglishHeadword.FromSelection("“Don’t”"));
+        Equal("well-known", EnglishHeadword.FromSelection("well-known"));
+        Equal("i", EnglishHeadword.FromSelection("I"));
+        foreach (var value in new[] { "next week", "week\nend", "中文", "http://example.com", "example.com", "foo_bar",
+            "week2", "--word", "well--known", "a-'b", "", new string('a', 49) })
+            Equal<string?>(null, EnglishHeadword.FromSelection(value));
+    }),
+    ("offline dictionary import and lookup retain two glosses and preserve an installed database on failure", () =>
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"SelectionPreview-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        var source = Path.Combine(temp, "words.csv");
+        var database = Path.Combine(temp, "words.sqlite");
+        var dictionary = new OfflineDictionary(database);
+        try
+        {
+            Equal<string?>(null, dictionary.Lookup("week"));
+            Equal(false, File.Exists(database));
+            File.WriteAllText(source, """
+                word,translation,definition
+                Week,"n. 周, 星期\n一周\n不会显示",definition
+                Don't,不要,definition
+                well-known,著名的,definition
+                two words,不导入,definition
+                week,重复,definition
+                """);
+            Equal(3, DictionaryBuilder.Build(source, database));
+            Equal("n. 周, 星期\n一周", dictionary.Lookup(EnglishHeadword.FromSelection("WEEK.")!));
+            Equal("不要", dictionary.Lookup(EnglishHeadword.FromSelection("Don’t")!));
+            Equal("著名的", dictionary.Lookup("well-known"));
+            Equal<string?>(null, dictionary.Lookup("missing"));
+            Equal<string?>(null, dictionary.Lookup("' OR 1=1 --"));
+            File.WriteAllText(source, "word,translation\nnew,新的\nbad,unexpected,field\n");
+            try
+            {
+                DictionaryBuilder.Build(source, database, overwrite: true);
+                throw new Exception("Malformed CSV should fail.");
+            }
+            catch (InvalidDataException) { }
+            Equal("n. 周, 星期\n一周", dictionary.Lookup("week"));
+            File.WriteAllText(database, "not a database");
+            Equal<string?>(null, dictionary.Lookup("week"));
+        }
+        finally
+        {
+            File.Delete(source);
+            File.Delete(database);
+            Directory.Delete(temp);
+        }
+    }),
+    ("lookup results can enrich only the still-visible, current selection", () =>
+    {
+        Action<SelectionCycle>[] interruptions =
+        [
+            cycle => cycle.LeftDown(1, new(30, 30), false, 200),
+            cycle => { cycle.SetActivationHeld(false); cycle.SetActivationHeld(true); },
+            cycle => { cycle.SetForeground(2); cycle.SetForeground(1); },
+            cycle => cycle.Dismiss()
+        ];
+        foreach (var interrupt in interruptions)
+        {
+            var cycle = Cycle();
+            var previous = KeyProbe(cycle);
+            Equal(false, cycle.CanEnrich(previous, 70));
+            Equal(true, cycle.Complete(previous, true, 100));
+            Equal(true, cycle.CanEnrich(previous, 150));
+            interrupt(cycle);
+            Equal(false, cycle.CanEnrich(previous, 260));
+            var current = KeyProbe(cycle, 300);
+            Equal(true, cycle.Complete(current, true, 400));
+            Equal(false, cycle.CanEnrich(previous, 500));
+            Equal(true, cycle.CanEnrich(current, 4_399));
+            Equal(false, cycle.CanEnrich(current, 4_400)); // Even before the timer hides the card.
+            cycle.Advance(4_400);
+            Equal(false, cycle.Visible);
+        }
+    }),
+    ("gestures do not query until activation is held from the start", () =>
+    {
+        var cycle = Cycle(activationHeld: false);
+        var start = new PixelPoint(20, 20);
+        var end = new PixelPoint(80, 20);
+        cycle.LeftDown(1, start, false, 10);
+        cycle.LeftUp(end, 30);
+        Click(cycle, 100, start);
+        Click(cycle, 180, start);
+        cycle.KeyDown(KeyAction.Selection, 260);
+        Equal<Probe?>(null, cycle.Advance(320));
+        Equal(false, cycle.HasTimedWork);
+
+        cycle.LeftDown(1, start, false, 350);
+        cycle.SetActivationHeld(true);
+        cycle.LeftUp(end, 380);
+        Equal<Probe?>(null, cycle.Advance(430));
+        Click(cycle, 450, start);
+        Equal<Probe?>(null, cycle.Advance(502));
+        cycle.LeftDown(1, start, false, 550);
+        cycle.LeftUp(end, 580);
+        Equal(SelectionGesture.Mouse, cycle.Advance(612)!.Value.Gesture);
+    }),
+    ("activation release cancels pending or in-flight selection reads", () =>
+    {
+        var cycle = Cycle();
+        cycle.KeyDown(KeyAction.Selection, 0);
+        cycle.SetActivationHeld(false);
+        cycle.SetActivationHeld(true);
+        Equal<Probe?>(null, cycle.Advance(52));
+
+        var inFlight = KeyProbe(cycle, 100);
+        cycle.SetActivationHeld(false);
+        cycle.SetActivationHeld(true);
+        Equal(false, cycle.Complete(inFlight, true, 200));
+        Equal(false, cycle.HasTimedWork);
+    }),
+    ("activation release hides the preview and resets consecutive clicks", () =>
+    {
+        var cycle = Cycle();
+        var point = new PixelPoint(20, 20);
+        Click(cycle, 0, point);
+        Click(cycle, 100, point);
+        var probe = cycle.Advance(152)!.Value;
+        Equal(true, cycle.Complete(probe, true, 175));
+        cycle.SetActivationHeld(false);
+        Equal(false, cycle.Visible);
+        Equal(false, cycle.HasTimedWork);
+        cycle.SetActivationHeld(true);
+        Click(cycle, 240, point);
+        Equal<Probe?>(null, cycle.Advance(292));
+    }),
+    ("either Ctrl keeps the activation held until both are released", () =>
+    {
+        var keys = new SelectionModifiers(0);
+        Equal(false, keys.Control);
+        keys.OnPacket(0x11, 0x1D, 0); // Left Ctrl down.
+        Equal(true, keys.Control);
+        keys.OnPacket(0x11, 0x1D, 2); // Right Ctrl down.
+        keys.OnPacket(0x11, 0x1D, 1); // Left Ctrl up.
+        Equal(true, keys.Control);
+        keys.OnPacket(0x11, 0x1D, 3); // Right Ctrl up.
+        Equal(false, keys.Control);
+    }),
     ("plain click does not query", () =>
     {
         var cycle = Cycle();
@@ -279,9 +424,9 @@ foreach (var (name, run) in cases)
 Console.WriteLine($"{cases.Length - failures}/{cases.Length} checks passed.");
 return failures == 0 ? 0 : 1;
 
-static SelectionCycle Cycle()
+static SelectionCycle Cycle(bool activationHeld = true)
 {
-    var cycle = new SelectionCycle(500, new(4, 4), new(4, 4));
+    var cycle = new SelectionCycle(500, new(4, 4), new(4, 4), activationHeld);
     cycle.SetForeground(1);
     return cycle;
 }

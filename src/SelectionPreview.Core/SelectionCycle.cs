@@ -19,7 +19,7 @@ public static class SelectionKeys
 }
 
 /// <summary>Owns the timing and identity of gestures, probes and visibility. All times are monotonic milliseconds.</summary>
-public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadius, PixelSize dragRadius)
+public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadius, PixelSize dragRadius, bool activationHeld = true)
 {
     private long _generation;
     private long _showUntil;
@@ -29,10 +29,18 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
     private MousePress? _press;
     private ClickSequence? _clickSequence;
     private nint _foreground;
+    private bool _activationHeld = activationHeld;
 
     public long Generation => _generation;
     public bool Visible { get; private set; }
     public bool HasTimedWork => Visible || _pending.HasValue || _inFlight.HasValue;
+
+    public void SetActivationHeld(bool held)
+    {
+        if (_activationHeld == held) return;
+        _activationHeld = held;
+        if (!held) Dismiss();
+    }
 
     public void SetForeground(nint foreground)
     {
@@ -45,6 +53,7 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public void LeftDown(nint source, PixelPoint position, bool shift, long now)
     {
+        if (!_activationHeld) return;
         Invalidate();
         if (_clickSequence?.Window != source) _clickSequence = null;
         _press = source == 0 ? null : new(source, position, shift, now);
@@ -81,6 +90,7 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public void KeyDown(KeyAction action, long now)
     {
+        if (!_activationHeld) return;
         switch (action)
         {
             case KeyAction.Selection:
@@ -120,6 +130,9 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
         _showUntil = now + 4_000;
         return true;
     }
+
+    public bool CanEnrich(Probe probe, long now) => _activationHeld && Visible && now < _showUntil
+        && probe.Generation == _generation && probe.Source == _foreground;
 
     private void Schedule(SelectionGesture gesture, PixelPoint start, PixelPoint end, long now, int delay, int clickCount = 0)
     {

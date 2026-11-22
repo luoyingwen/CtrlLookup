@@ -10,6 +10,7 @@ public enum ModifierKey : byte
 public sealed class SelectionModifiers(ModifierKey held)
 {
     public bool Shift => (held & (ModifierKey.LeftShift | ModifierKey.RightShift)) != 0;
+    public bool Control => (held & (ModifierKey.LeftControl | ModifierKey.RightControl)) != 0;
 
     public KeyAction? OnPacket(ushort key, ushort scanCode, ushort flags)
     {
@@ -32,8 +33,7 @@ public sealed class SelectionModifiers(ModifierKey held)
             return null;
         }
         if (released) return null;
-        var control = (held & (ModifierKey.LeftControl | ModifierKey.RightControl)) != 0;
         var alternate = (held & (ModifierKey.LeftAlt | ModifierKey.RightAlt | ModifierKey.LeftWindows | ModifierKey.RightWindows)) != 0;
-        return SelectionKeys.Classify(key, Shift, control, alternate);
+        return SelectionKeys.Classify(key, Shift, Control, alternate);
     }
 }

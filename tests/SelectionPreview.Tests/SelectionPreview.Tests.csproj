@@ -3,9 +3,11 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\SelectionPreview.Dictionary\SelectionPreview.Dictionary.csproj" />
     <ProjectReference Include="..\..\src\SelectionPreview.Core\SelectionPreview.Core.csproj" />
   </ItemGroup>
 </Project>

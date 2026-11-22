@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Windows;
+using System.Windows.Documents;
 using System.Windows.Interop;
 using System.Windows.Media;
 using SelectionPreview.Core;
@@ -13,6 +14,7 @@ public partial class PreviewWindow : Window
     private static readonly SolidColorBrush Ink = Brush(0x12, 0x32, 0x43);
     private static readonly SolidColorBrush Edge = Brush(0x6F, 0x94, 0x9C);
     private readonly nint _hwnd;
+    private CardPlacement? _placement;
 
     public PreviewWindow()
     {
@@ -48,6 +50,30 @@ public partial class PreviewWindow : Window
         Card.BorderBrush = highContrast ? SystemColors.WindowTextBrush : Edge;
         Body.Foreground = highContrast ? SystemColors.WindowTextBrush : Ink;
         Body.Text = snapshot.Text;
+        var card = new CardPlacement(work, anchor, scale);
+        var placement = Measure(card);
+        if (!Move(placement)) return false;
+        Show();
+        if (!Move(placement)) return false;
+        _placement = card;
+        return true;
+    }
+
+    internal void ShowMeaning(string gloss)
+    {
+        if (!IsVisible || _placement is not { } card) return;
+        var original = Body.Text;
+        Body.Inlines.Clear();
+        Body.Inlines.Add(new Run(original) { FontWeight = FontWeights.SemiBold });
+        Body.Inlines.Add(new LineBreak());
+        Body.Inlines.Add(new Run(gloss));
+        // Reuse the current monitor and anchor without hiding or re-showing the window.
+        if (!Move(Measure(card))) Body.Text = original;
+    }
+
+    private PixelRect Measure(CardPlacement card)
+    {
+        var (work, anchor, scale) = card;
         var maxWidthPx = Math.Min((int)Math.Floor(420 * scale), work.Width);
         var height = Math.Min(120, work.Height / scale);
         Body.MaxHeight = Math.Max(1, height - 20);
@@ -56,14 +82,12 @@ public partial class PreviewWindow : Window
         const int textWidthSlackPx = 2;
         var desired = new PixelSize(Math.Min(maxWidthPx, (int)Math.Ceiling(Card.DesiredSize.Width * scale) + textWidthSlackPx),
             (int)Math.Ceiling(Card.DesiredSize.Height * scale));
-        var placement = PopupPlacement.Fit(anchor, work, desired, (int)Math.Ceiling(6 * scale));
-        if (!Move(placement)) return false;
-        Show();
-        return Move(placement);
+        return PopupPlacement.Fit(anchor, work, desired, (int)Math.Ceiling(6 * scale));
     }
 
     internal void Clear()
     {
+        _placement = null;
         if (IsVisible) Hide();
         if (Body.Text.Length > 0) Body.Text = string.Empty;
     }
@@ -76,6 +100,8 @@ public partial class PreviewWindow : Window
         var column = lines.OrderBy(r => Math.Abs((long)r.Center.Y - nearest.Y)).First();
         return new(column.Left, lines.Min(r => r.Top), column.Right, lines.Max(r => r.Bottom));
     }
+
+    private readonly record struct CardPlacement(PixelRect Work, PixelRect Anchor, double Scale);
 
     private static SolidColorBrush Brush(byte r, byte g, byte b)
     {
