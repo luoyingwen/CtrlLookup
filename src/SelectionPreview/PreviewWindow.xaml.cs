@@ -48,11 +48,13 @@ public partial class PreviewWindow : Window
         Card.BorderBrush = highContrast ? SystemColors.WindowTextBrush : Edge;
         Body.Foreground = highContrast ? SystemColors.WindowTextBrush : Ink;
         Body.Text = snapshot.Text;
-        var width = Math.Min(420, work.Width / scale);
+        var maxWidthPx = Math.Min((int)Math.Floor(420 * scale), work.Width);
         var height = Math.Min(120, work.Height / scale);
         Body.MaxHeight = Math.Max(1, height - 20);
-        Card.Measure(new Size(width, height));
-        var desired = new PixelSize((int)Math.Ceiling(Card.DesiredSize.Width * scale),
+        Card.Measure(new Size(maxWidthPx / scale, height));
+        // WPF can reflow an exact-fit line after pixel rounding during arrange (e.g. "week" at 200%).
+        const int textWidthSlackPx = 2;
+        var desired = new PixelSize(Math.Min(maxWidthPx, (int)Math.Ceiling(Card.DesiredSize.Width * scale) + textWidthSlackPx),
             (int)Math.Ceiling(Card.DesiredSize.Height * scale));
         var placement = PopupPlacement.Fit(anchor, work, desired, (int)Math.Ceiling(6 * scale));
         if (!Move(placement)) return false;
