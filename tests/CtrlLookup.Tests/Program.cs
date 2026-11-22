@@ -150,6 +150,45 @@ var cases = new (string Name, Action Run)[]
             Directory.Delete(temp);
         }
     }),
+    ("lookup history appends only English entries and keeps repeated lookups", () =>
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"CtrlLookup-test-{Guid.NewGuid():N}");
+        var path = Path.Combine(temp, "lookup-history.txt");
+        var history = new LookupHistory(path);
+        var english = DictionaryQuery.FromSelection("(WEEK.)")!.Value;
+        var chinese = DictionaryQuery.FromSelection("电脑")!.Value;
+        try
+        {
+            history.Record(english, null);
+            history.Record(chinese, null);
+            history.Record(chinese, "variant of 電腦|电脑[dian4 nao3]\n𠮷\n123");
+            history.Record(new DictionaryQuery(LookupDirection.EnglishToChinese, "电脑"), "computer");
+            Equal(false, File.Exists(path));
+
+            history.Record(english, "星期");
+            history.Record(chinese, "computer\r\nelectronic computer");
+            history.Record(chinese, "variant of 電腦|电脑[dian4 nao3]\n  café (loanword)  ");
+            new LookupHistory(path).Record(english, "星期");
+            history.Record(DictionaryQuery.FromSelection("missing")!.Value, null);
+            Equal("week|computer|electronic computer|café (loanword)|week", string.Join('|', File.ReadAllLines(path)));
+        }
+        finally
+        {
+            File.Delete(path);
+            if (Directory.Exists(temp)) Directory.Delete(temp);
+        }
+    }),
+    ("an unwritable history destination does not throw", () =>
+    {
+        var temp = Directory.CreateTempSubdirectory("CtrlLookup-test-");
+        try
+        {
+            var history = new LookupHistory(temp.FullName);
+            history.Record(DictionaryQuery.FromSelection("week")!.Value, "星期");
+            Equal(true, temp.Exists);
+        }
+        finally { temp.Delete(); }
+    }),
     ("lookup results can enrich only the still-visible, current selection", () =>
     {
         Action<SelectionCycle>[] interruptions =

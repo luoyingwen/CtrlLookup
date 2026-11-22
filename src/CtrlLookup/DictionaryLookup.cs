@@ -10,6 +10,7 @@ internal sealed class DictionaryLookup : IDisposable
 {
     private readonly object _gate = new();
     private readonly OfflineDictionaries _dictionaries = new(OfflineDictionary.DefaultPath, OfflineDictionary.ChinesePath);
+    private readonly LookupHistory _history = new(LookupHistory.DefaultPath);
     private readonly Action<Probe, string> _completed;
     private (Probe Probe, DictionaryQuery Query)? _pending;
     private Probe? _current;
@@ -65,7 +66,9 @@ internal sealed class DictionaryLookup : IDisposable
                 _pending = null;
             }
 
-            if (_dictionaries.Lookup(job.Query) is not { } gloss) continue;
+            var gloss = _dictionaries.Lookup(job.Query);
+            _history.Record(job.Query, gloss);
+            if (gloss is null) continue;
             lock (_gate)
             {
                 if (_stopped || _current != job.Probe) continue;
