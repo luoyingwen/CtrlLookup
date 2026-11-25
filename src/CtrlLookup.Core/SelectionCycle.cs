@@ -53,9 +53,12 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public void LeftDown(nint source, PixelPoint position, bool shift, long now)
     {
-        if (!_activationHeld) return;
-        Invalidate();
-        if (_clickSequence?.Window != source) _clickSequence = null;
+        // Keep the press when Ctrl arrives after the button is down. It qualifies on release.
+        if (_activationHeld)
+        {
+            Invalidate();
+            if (_clickSequence?.Window != source) _clickSequence = null;
+        }
         _press = source == 0 ? null : new(source, position, shift, now);
     }
 
@@ -63,7 +66,7 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
     {
         var press = _press;
         _press = null;
-        if (press is not { } down || down.Window != _foreground) return;
+        if (!_activationHeld || press is not { } down || down.Window != _foreground) return;
 
         var dragged = !Near(down.Position, position, dragRadius);
         if (dragged || down.Shift)

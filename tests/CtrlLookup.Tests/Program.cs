@@ -216,7 +216,7 @@ var cases = new (string Name, Action Run)[]
             Equal(false, cycle.CanEnrich(current));
         }
     }),
-    ("gestures do not query until activation is held from the start", () =>
+    ("a drag qualifies when activation is held before the button is released", () =>
     {
         var cycle = Cycle(activationHeld: false);
         var start = new PixelPoint(20, 20);
@@ -232,12 +232,27 @@ var cases = new (string Name, Action Run)[]
         cycle.LeftDown(1, start, false, 350);
         cycle.SetActivationHeld(true);
         cycle.LeftUp(end, 380);
-        Equal<Probe?>(null, cycle.Advance(430));
-        Click(cycle, 450, start);
-        Equal<Probe?>(null, cycle.Advance(502));
-        cycle.LeftDown(1, start, false, 550);
-        cycle.LeftUp(end, 580);
-        Equal(SelectionGesture.Mouse, cycle.Advance(612)!.Value.Gesture);
+        var late = cycle.Advance(412)!.Value;
+        Equal(SelectionGesture.Mouse, late.Gesture);
+        Equal(start, late.Start);
+        Equal(end, late.End);
+        cycle.SetActivationHeld(false);
+
+        cycle.LeftDown(1, start, false, 500);
+        cycle.SetActivationHeld(true);
+        cycle.LeftUp(start, 520);
+        Equal<Probe?>(null, cycle.Advance(570));
+        cycle.SetActivationHeld(false);
+        cycle.LeftDown(1, start, false, 600);
+        cycle.SetActivationHeld(true);
+        cycle.SetActivationHeld(false);
+        cycle.LeftUp(end, 640);
+        Equal<Probe?>(null, cycle.Advance(690));
+
+        cycle.SetActivationHeld(true);
+        cycle.LeftDown(1, start, false, 750);
+        cycle.LeftUp(end, 780);
+        Equal(SelectionGesture.Mouse, cycle.Advance(812)!.Value.Gesture);
     }),
     ("activation release cancels pending or in-flight selection reads", () =>
     {
