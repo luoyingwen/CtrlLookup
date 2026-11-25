@@ -9,7 +9,7 @@ public sealed class LookupHistory(string path)
 
     public void Record(DictionaryQuery query, string? gloss)
     {
-        if (string.IsNullOrWhiteSpace(gloss)) return;
+        if (!query.Headword || string.IsNullOrWhiteSpace(gloss)) return;
 
         var entry = query.Direction switch
         {

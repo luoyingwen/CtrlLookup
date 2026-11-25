@@ -1,5 +1,8 @@
 using System.IO.Compression;
+using System.Net;
+using System.Net.Http;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using CtrlLookup.Core;
 using CtrlLookup.Dictionary;
@@ -65,9 +68,18 @@ var cases = new (string Name, Action Run)[]
         Equal(new DictionaryQuery(LookupDirection.ChineseToEnglish, "星期"), DictionaryQuery.FromSelection(" 「 星期。 」\r\n"));
         foreach (var term in new[] { "电脑", "電腦", "画蛇添足", "行", "𠮷", "〇", new string('字', 32) })
             Equal(new DictionaryQuery(LookupDirection.ChineseToEnglish, term), DictionaryQuery.FromSelection(term));
-        foreach (var text in new[] { "你好 hello", "阿Q", "中 文", "成\n语", "你好，世界", "https://例子.example", "https://example.com",
-            "週😀", "词２", "「。」", new string('字', 33), "\ud800" })
+        foreach (var text in new[] { "https://例子.example", "https://example.com", "www.example.com", "「。」", "\ud800" })
             Equal<DictionaryQuery?>(null, DictionaryQuery.FromSelection(text));
+        var phrase = DictionaryQuery.FromSelection("  deepseek xyzzy. Keep holding.  ")!.Value;
+        Equal(new DictionaryQuery(LookupDirection.EnglishToChinese, "deepseek xyzzy. Keep holding.", false), phrase);
+        var sentences = DictionaryQuery.FromSelection("你好，世界。今天天气很好。")!.Value;
+        Equal(LookupDirection.ChineseToEnglish, sentences.Direction);
+        Equal("你好，世界。今天天气很好。", sentences.Term);
+        Equal(false, sentences.Headword);
+        Equal(new DictionaryQuery(LookupDirection.ChineseToEnglish, "中 文", false), DictionaryQuery.FromSelection("中 文"));
+        Equal(new DictionaryQuery(LookupDirection.EnglishToChinese, "你好 hello", false), DictionaryQuery.FromSelection("你好 hello"));
+        Equal(false, DictionaryQuery.FromSelection(new string('字', 33))!.Value.Headword);
+        Equal(DictionaryQuery.PassageLimit, DictionaryQuery.FromSelection(new string('a', DictionaryQuery.PassageLimit + 20))!.Value.Term.Length);
     }),
     ("CC-CEDICT imports both scripts and keeps the dictionaries independent", () =>
     {
@@ -170,6 +182,7 @@ var cases = new (string Name, Action Run)[]
             history.Record(chinese, "variant of 電腦|电脑[dian4 nao3]\n  café (loanword)  ");
             new LookupHistory(path).Record(english, "星期");
             history.Record(DictionaryQuery.FromSelection("missing")!.Value, null);
+            history.Record(new DictionaryQuery(LookupDirection.ChineseToEnglish, "你好，世界", false), "Hello world");
             Equal("week|computer|electronic computer|café (loanword)|week", string.Join('|', File.ReadAllLines(path)));
         }
         finally
@@ -188,6 +201,84 @@ var cases = new (string Name, Action Run)[]
             Equal(true, temp.Exists);
         }
         finally { temp.Delete(); }
+    }),
+    ("offline misses fall back to an OpenAI-compatible translation", () =>
+    {
+        var temp = Path.Combine(Path.GetTempPath(), $"CtrlLookup-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temp);
+        var settings = Path.Combine(temp, "llm.json");
+        var englishSource = Path.Combine(temp, "en.csv");
+        var english = Path.Combine(temp, "en.sqlite");
+        var handler = new RecordingHandler();
+        try
+        {
+            File.WriteAllText(settings, """{ "endpoint": "https://file.example/v1/chat/completions", "model": "file-model", "apiKey": "file-key" }""");
+            Equal<LlmTranslator?>(null, LlmTranslator.Load("ftp://explicit.example/v1", "explicit", null, settings));
+            Equal<LlmTranslator?>(null, LlmTranslator.Load(null, null, null, Path.Combine(temp, "missing.json")));
+            File.WriteAllText(settings, "{");
+            Equal<LlmTranslator?>(null, LlmTranslator.Load(null, null, null, settings));
+            File.WriteAllText(settings, """{ "endpoint": "https://file.example/v1/chat/completions", "model": "file-model", "apiKey": "file-key" }""");
+            using (var fromFile = LlmTranslator.Load(" ", null, null, settings))
+                Equal(true, fromFile is not null);
+
+            File.WriteAllText(englishSource, "word,translation\nweek,星期\n");
+            Equal(1, DictionaryBuilder.Build(englishSource, english));
+            var dictionaries = new OfflineDictionaries(english, Path.Combine(temp, "missing-zh.sqlite"));
+            using var translator = LlmTranslator.Load("https://llm.example/v1/chat/completions", "demo", "secret", settings, handler);
+            Equal(true, translator is not null);
+            var known = new DictionaryQuery(LookupDirection.EnglishToChinese, "week");
+            var missing = new DictionaryQuery(LookupDirection.EnglishToChinese, "xyzzy");
+            Equal("星期", DictionaryTranslation.Lookup(dictionaries, translator, known));
+            Equal(0, handler.Calls);
+
+            handler.ResponseJson = """{"choices":[{"message":{"content":"1. 稀有词\n- 第二义\n第三行"}}]}""";
+            Equal("稀有词\n第二义", translator!.Translate(missing));
+            Equal(1, handler.Calls);
+            Equal("Bearer", handler.Scheme);
+            Equal("secret", handler.Parameter);
+            Equal(true, handler.Body!.Contains("\"model\":\"demo\"", StringComparison.Ordinal));
+            Equal(true, handler.Body.Contains("Simplified Chinese", StringComparison.Ordinal));
+            Equal(true, handler.Body.Contains("xyzzy", StringComparison.Ordinal));
+            Equal(false, handler.Body.Contains("thinking", StringComparison.Ordinal));
+            Equal("稀有词\n第二义", translator.Translate(missing));
+            Equal(1, handler.Calls);
+
+            handler.Status = HttpStatusCode.BadGateway;
+            var retry = new DictionaryQuery(LookupDirection.ChineseToEnglish, "未收录");
+            Equal<string?>(null, translator.Translate(retry));
+            Equal(2, handler.Calls);
+            Equal(true, handler.Body.Contains("into English", StringComparison.Ordinal));
+            Equal(true, handler.Body.Contains("未收录", StringComparison.Ordinal));
+            handler.Status = HttpStatusCode.OK;
+            handler.ResponseJson = """{"choices":[{"message":{"content":"an unlisted word"}}]}""";
+            Equal("an unlisted word", translator.Translate(retry));
+            Equal(3, handler.Calls);
+
+            using var deepseek = LlmTranslator.Load("https://api.deepseek.com/chat/completions", "deepseek-flash", "secret", settings, handler);
+            handler.ResponseJson = """{"choices":[{"message":{"content":"无意义词","reasoning_content":"ignored"}}]}""";
+            Equal("无意义词", deepseek!.Translate(new DictionaryQuery(LookupDirection.EnglishToChinese, "qqqq")));
+            Equal(true, handler.Body!.Contains("\"thinking\":{\"type\":\"disabled\"}", StringComparison.Ordinal));
+            var passage = new DictionaryQuery(LookupDirection.EnglishToChinese, "deepseek xyzzy. Keep holding.", false);
+            handler.ResponseJson = """{"choices":[{"message":{"content":"第一句。\n第二句。\n第三句。"}}]}""";
+            Equal("第一句。\n第二句。\n第三句。", DictionaryTranslation.Lookup(dictionaries, translator, passage));
+            Equal(true, handler.Body.Contains("only the translation", StringComparison.Ordinal));
+            Equal(true, handler.Body.Contains("deepseek xyzzy", StringComparison.Ordinal));
+            Equal(false, handler.Body.Contains("two short dictionary", StringComparison.Ordinal));
+
+            var localHandler = new RecordingHandler { ResponseJson = """{"choices":[]}""" };
+            using var local = LlmTranslator.Load("http://127.0.0.1:9/v1/chat/completions", "local", " ", settings, localHandler);
+            var calls = localHandler.Calls;
+            Equal<string?>(null, local!.Translate(new DictionaryQuery(LookupDirection.EnglishToChinese, "blank")));
+            Equal(calls + 1, localHandler.Calls);
+            Equal<string?>(null, localHandler.Scheme);
+            Equal<string?>(null, local.Translate(new DictionaryQuery(LookupDirection.EnglishToChinese, "blank"), new CancellationToken(true)));
+            Equal(calls + 1, localHandler.Calls);
+        }
+        finally
+        {
+            foreach (var path in new[] { settings, englishSource, english }) if (File.Exists(path)) File.Delete(path);
+            Directory.Delete(temp);
+        }
     }),
     ("lookup results can enrich only the still-visible, current selection", () =>
     {
@@ -598,4 +689,26 @@ static void Equal<T>(T expected, T actual)
 {
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
         throw new InvalidOperationException($"Expected {expected}, got {actual}.");
+}
+
+sealed class RecordingHandler : HttpMessageHandler
+{
+    public int Calls;
+    public HttpStatusCode Status = HttpStatusCode.OK;
+    public string ResponseJson = """{"choices":[{"message":{"content":""}}]}""";
+    public string? Body;
+    public string? Scheme;
+    public string? Parameter;
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Calls++;
+        Body = request.Content?.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
+        Scheme = request.Headers.Authorization?.Scheme;
+        Parameter = request.Headers.Authorization?.Parameter;
+        return Task.FromResult(new HttpResponseMessage(Status)
+        {
+            Content = new StringContent(ResponseJson, Encoding.UTF8, "application/json")
+        });
+    }
 }

@@ -75,7 +75,7 @@ public partial class PreviewWindow : Window
     {
         var (work, anchor, scale) = card;
         var maxWidthPx = Math.Min((int)Math.Floor(420 * scale), work.Width);
-        var height = Math.Min(120, work.Height / scale);
+        var height = Math.Min(360, work.Height / scale);
         Body.MaxHeight = Math.Max(1, height - 20);
         Card.Measure(new Size(maxWidthPx / scale, height));
         // WPF can reflow an exact-fit line after pixel rounding during arrange (e.g. "week" at 200%).
