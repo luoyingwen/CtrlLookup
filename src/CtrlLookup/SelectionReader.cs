@@ -17,6 +17,8 @@ namespace CtrlLookup;
 /// <summary>One MTA worker with a latest-only inbox. No UIA objects cross into the UI thread.</summary>
 internal sealed class SelectionReader : IDisposable
 {
+    // Rich HTML in Outlook's WebView2 can sit more than 24 levels below its first native HWND.
+    private const int MaxPathElements = 64;
     private readonly object _gate = new();
     private readonly Thread _thread;
     private readonly Action<Probe, SelectionSnapshot?> _completed;
@@ -176,7 +178,7 @@ internal sealed class SelectionReader : IDisposable
     {
         List<AutomationElement> path = [];
         var attributed = false;
-        for (var depth = 0; element is not null && depth < 24 && !Expired(probe); depth++)
+        for (var depth = 0; element is not null && depth < MaxPathElements && !Expired(probe); depth++)
         {
             if (Sensitive(element)) return null;
             var handle = element.Properties.NativeWindowHandle.ValueOrDefault;
