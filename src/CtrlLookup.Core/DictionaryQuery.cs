@@ -4,7 +4,7 @@ public enum LookupDirection { EnglishToChinese, ChineseToEnglish }
 
 public readonly record struct DictionaryQuery(LookupDirection Direction, string Term, bool Headword = true)
 {
-    public const int PassageLimit = 1200;
+    public const int PassageLimit = LlmSelectionText.MaximumLength;
 
     public static DictionaryQuery? FromSelection(string text)
     {
@@ -16,14 +16,7 @@ public readonly record struct DictionaryQuery(LookupDirection Direction, string 
     // Phrases and sentences skip the offline dictionary and are translated only when an LLM is configured.
     private static DictionaryQuery? Passage(string text)
     {
-        var term = text.Trim();
-        if (term.Length == 0 || IsAddress(term)) return null;
-        if (term.Length > PassageLimit)
-        {
-            var end = PassageLimit;
-            if (char.IsHighSurrogate(term[end - 1])) end--;
-            term = term[..end];
-        }
+        if (LlmSelectionText.Limit(text.Trim()) is not { } term) return null;
         var han = 0;
         var latin = 0;
         try
@@ -39,12 +32,6 @@ public readonly record struct DictionaryQuery(LookupDirection Direction, string 
         var direction = han >= latin ? LookupDirection.ChineseToEnglish : LookupDirection.EnglishToChinese;
         return new(direction, term, false);
     }
-
-    private static bool IsAddress(string text) =>
-        !text.Contains(' ') && !text.Contains('\n') && !text.Contains('\t') &&
-        (text.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("www.", StringComparison.OrdinalIgnoreCase));
 }
 
 public static class ChineseHeadword

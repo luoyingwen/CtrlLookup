@@ -59,14 +59,22 @@ public partial class PreviewWindow : Window
         return true;
     }
 
-    internal void ShowMeaning(string gloss)
+    internal void ShowResult(string result, SelectionMode mode)
     {
         if (!IsVisible || _placement is not { } card) return;
         var original = Body.Text;
-        Body.Inlines.Clear();
-        Body.Inlines.Add(new Run(original) { FontWeight = FontWeights.SemiBold });
-        Body.Inlines.Add(new LineBreak());
-        Body.Inlines.Add(new Run(gloss));
+        if (mode == SelectionMode.Writing)
+        {
+            // A long original can fill the card, leaving no space for the edited text below it.
+            Body.Text = result;
+        }
+        else
+        {
+            Body.Inlines.Clear();
+            Body.Inlines.Add(new Run(original) { FontWeight = FontWeights.SemiBold });
+            Body.Inlines.Add(new LineBreak());
+            Body.Inlines.Add(new Run(result));
+        }
         // Reuse the current monitor and anchor without hiding or re-showing the window.
         if (!Move(Measure(card))) Body.Text = original;
     }

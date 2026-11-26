@@ -17,7 +17,7 @@ public partial class App : System.Windows.Application
     private Mutex? _instance;
     private SelectionCycle? _cycle;
     private SelectionReader? _reader;
-    private DictionaryLookup? _lookup;
+    private SelectionEnrichment? _enrichment;
     private DesktopInput? _input;
     private PreviewWindow? _popup;
     private Forms.NotifyIcon? _tray;
@@ -43,17 +43,17 @@ public partial class App : System.Windows.Application
         // A narrow glyph can be selected with less movement than a Windows drag-and-drop gesture.
         _cycle = new SelectionCycle((int)Native.GetDoubleClickTime(),
             new(Math.Max(1, Native.GetSystemMetrics(36) / 2), Math.Max(1, Native.GetSystemMetrics(37) / 2)),
-            new(2, 2), activationHeld: false);
+            new(2, 2), mode: SelectionMode.None);
         _popup = new PreviewWindow();
         _reader = new SelectionReader((probe, snapshot) =>
         {
             if (!Dispatcher.HasShutdownStarted)
                 Dispatcher.BeginInvoke(DispatcherPriority.Input, () => Complete(probe, snapshot));
         });
-        _lookup = new DictionaryLookup((probe, gloss) =>
+        _enrichment = new SelectionEnrichment((probe, result) =>
         {
             if (!Dispatcher.HasShutdownStarted)
-                Dispatcher.BeginInvoke(DispatcherPriority.Input, () => CompleteLookup(probe, gloss));
+                Dispatcher.BeginInvoke(DispatcherPriority.Input, () => CompleteEnrichment(probe, result));
         });
         _input = new DesktopInput();
         _input.ForegroundChanged += hwnd =>
@@ -66,7 +66,7 @@ public partial class App : System.Windows.Application
         _input.PrimaryUp += point => Signal(cycle => cycle.LeftUp(point, Now));
         _input.Key += key => { if (key != KeyAction.Modifier) Signal(cycle => cycle.KeyDown(key, Now)); };
         _input.Dismissed += () => Signal(cycle => cycle.Dismiss());
-        _input.ControlChanged += Pump;
+        _input.ActivationChanged += Pump;
         _clock.Tick += (_, _) => Pump();
 
         using var iconStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("CtrlLookup.Preview.ico")!;
@@ -99,7 +99,7 @@ public partial class App : System.Windows.Application
                 Forms.ToolTipIcon.Warning);
         }
         _toggle!.Text = _active ? "暂停划词" : "恢复划词";
-        _tray!.Text = _active ? $"{AppName}（按住 Ctrl）" : $"{AppName}（已暂停）";
+        _tray!.Text = _active ? $"{AppName}（Ctrl 查词 / Alt 写作）" : $"{AppName}（已暂停）";
     }
 
     private static long Now => Environment.TickCount64;
@@ -111,7 +111,7 @@ public partial class App : System.Windows.Application
 
     private void RefreshGestureContext()
     {
-        _cycle!.SetActivationHeld(_input!.ControlHeld);
+        _cycle!.SetMode(_input!.Mode);
         _cycle.SetForeground(External(Native.GetForegroundWindow()));
     }
 
@@ -127,7 +127,7 @@ public partial class App : System.Windows.Application
     {
         if (!_active)
         {
-            _lookup!.Clear();
+            _enrichment!.Clear();
             _popup!.Clear();
             _clock.Stop();
             return;
@@ -137,7 +137,7 @@ public partial class App : System.Windows.Application
         if (_readerGeneration != _cycle!.Generation)
         {
             _reader!.Clear();
-            _lookup!.Clear();
+            _enrichment!.Clear();
             _readerGeneration = _cycle.Generation;
         }
         if (_cycle.Advance(Now) is { } probe) _reader!.Submit(probe);
@@ -148,7 +148,7 @@ public partial class App : System.Windows.Application
     {
         if (!_cycle!.Visible)
         {
-            _lookup!.Clear();
+            _enrichment!.Clear();
             _popup!.Clear();
         }
         if (_cycle.NeedsPolling) _clock.Start();
@@ -162,16 +162,16 @@ public partial class App : System.Windows.Application
         if (_cycle!.Complete(probe, snapshot is not null, Now))
         {
             if (!_popup!.Present(snapshot!, probe)) _cycle.Dismiss();
-            else if (DictionaryQuery.FromSelection(snapshot!.Text) is { } query) _lookup!.Submit(probe, query);
+            else _enrichment!.Submit(probe, snapshot!.Text);
         }
         Pump();
     }
 
-    private void CompleteLookup(Probe probe, string gloss)
+    private void CompleteEnrichment(Probe probe, string result)
     {
         if (!_active) return;
         Pump();
-        if (_cycle!.CanEnrich(probe)) _popup!.ShowMeaning(gloss);
+        if (_cycle!.CanEnrich(probe)) _popup!.ShowResult(result, probe.Mode);
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -180,7 +180,7 @@ public partial class App : System.Windows.Application
         _clock.Stop();
         _input?.Dispose();
         _reader?.Dispose();
-        _lookup?.Dispose();
+        _enrichment?.Dispose();
         _tray?.Dispose();
         _menu?.Dispose();
         _icon?.Dispose();

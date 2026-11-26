@@ -1,8 +1,9 @@
 namespace CtrlLookup.Core;
 
 public enum SelectionGesture { Mouse, Keyboard }
+public enum SelectionMode { None, Lookup, Writing }
 public readonly record struct Probe(long Generation, nint Source, SelectionGesture Gesture,
-    PixelPoint Start, PixelPoint End, long Deadline, int ClickCount = 0);
+    PixelPoint Start, PixelPoint End, long Deadline, int ClickCount = 0, SelectionMode Mode = SelectionMode.Lookup);
 public sealed record SelectionSnapshot(string Text, IReadOnlyList<PixelRect> Bounds, PixelPoint? Fallback);
 
 public enum KeyAction { Modifier, Selection, Dismiss }
@@ -19,7 +20,7 @@ public static class SelectionKeys
 }
 
 /// <summary>Owns the timing and identity of gestures, probes and visibility. All times are monotonic milliseconds.</summary>
-public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadius, PixelSize dragRadius, bool activationHeld = true)
+public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadius, PixelSize dragRadius, SelectionMode mode = SelectionMode.Lookup)
 {
     private long _generation;
     private long _due;
@@ -28,18 +29,18 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
     private MousePress? _press;
     private ClickSequence? _clickSequence;
     private nint _foreground;
-    private bool _activationHeld = activationHeld;
+    private SelectionMode _mode = mode;
 
     public long Generation => _generation;
     public bool Visible { get; private set; }
-    // Keep polling while visible so a missed Ctrl key-up cannot strand a card.
+    // Keep polling while visible so a missed modifier key-up cannot strand a card.
     public bool NeedsPolling => Visible || _pending.HasValue || _inFlight.HasValue;
 
-    public void SetActivationHeld(bool held)
+    public void SetMode(SelectionMode mode)
     {
-        if (_activationHeld == held) return;
-        _activationHeld = held;
-        if (!held) Dismiss();
+        if (_mode == mode) return;
+        if (_mode != SelectionMode.None) Dismiss();
+        _mode = mode;
     }
 
     public void SetForeground(nint foreground)
@@ -53,8 +54,8 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public void LeftDown(nint source, PixelPoint position, bool shift, long now)
     {
-        // Keep the press when Ctrl arrives after the button is down. It qualifies on release.
-        if (_activationHeld)
+        // Keep the press when the activation key arrives after the button is down.
+        if (_mode != SelectionMode.None)
         {
             Invalidate();
             if (_clickSequence?.Window != source) _clickSequence = null;
@@ -66,7 +67,7 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
     {
         var press = _press;
         _press = null;
-        if (!_activationHeld || press is not { } down || down.Window != _foreground) return;
+        if (_mode == SelectionMode.None || press is not { } down || down.Window != _foreground) return;
 
         var dragged = !Near(down.Position, position, dragRadius);
         if (dragged || down.Shift)
@@ -93,10 +94,10 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
 
     public void KeyDown(KeyAction action, long now)
     {
-        if (!_activationHeld) return;
+        if (_mode == SelectionMode.None) return;
         switch (action)
         {
-            case KeyAction.Selection:
+            case KeyAction.Selection when _mode == SelectionMode.Lookup:
                 _clickSequence = null;
                 _press = null;
                 Schedule(SelectionGesture.Keyboard, default, default, now, 52);
@@ -132,7 +133,7 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
         return true;
     }
 
-    public bool CanEnrich(Probe probe) => _activationHeld && Visible
+    public bool CanEnrich(Probe probe) => Visible && probe.Mode == _mode
         && probe.Generation == _generation && probe.Source == _foreground;
 
     private void Schedule(SelectionGesture gesture, PixelPoint start, PixelPoint end, long now, int delay, int clickCount = 0)
@@ -140,7 +141,7 @@ public sealed class SelectionCycle(int doubleClickMs, PixelSize doubleClickRadiu
         Invalidate();
         if (_foreground == 0) return;
         _due = now + delay;
-        _pending = new(_generation, _foreground, gesture, start, end, now + 450, clickCount);
+        _pending = new(_generation, _foreground, gesture, start, end, now + 450, clickCount, _mode);
     }
 
     private void Invalidate()

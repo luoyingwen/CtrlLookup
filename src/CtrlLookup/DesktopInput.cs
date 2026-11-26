@@ -19,12 +19,13 @@ internal sealed class DesktopInput : IDisposable
     public event Action<nint>? ForegroundChanged;
     public event Action<nint, PixelPoint, bool>? PrimaryDown;
     public event Action<PixelPoint>? PrimaryUp;
-    public event Action? ControlChanged;
+    public event Action? ActivationChanged;
     public event Action<KeyAction>? Key;
     public event Action? Dismissed;
 
     // Also check the live state so a missed key-up (e.g. when leaving the desktop) cannot leave the gate open.
-    public bool ControlHeld => _registered && _modifiers.Control && (Native.Down(0xA2) || Native.Down(0xA3));
+    public SelectionMode Mode => !_registered ? SelectionMode.None : _modifiers.ActiveMode(
+        Native.Down(0xA2) || Native.Down(0xA3), Native.Down(0xA4) || Native.Down(0xA5));
 
     public DesktopInput()
     {
@@ -76,9 +77,9 @@ internal sealed class DesktopInput : IDisposable
         if (data.Type == 0 && read >= 48) OnMouse(data.MouseButtons);
         if (data.Type == 1 && data.VirtualKey is > 0 and < 255)
         {
-            var wasControlHeld = _modifiers.Control;
+            var before = (_modifiers.Control, _modifiers.Alt);
             var action = _modifiers.OnPacket(data.VirtualKey, data.ScanCode, data.KeyFlags);
-            if (wasControlHeld != _modifiers.Control) ControlChanged?.Invoke();
+            if (before != (_modifiers.Control, _modifiers.Alt)) ActivationChanged?.Invoke();
             if (action is { } key) Key?.Invoke(key);
         }
         return 0; // Leave normal WM_INPUT cleanup to the window procedure.

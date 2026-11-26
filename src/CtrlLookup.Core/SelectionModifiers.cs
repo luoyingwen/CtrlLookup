@@ -11,6 +11,14 @@ public sealed class SelectionModifiers(ModifierKey held)
 {
     public bool Shift => (held & (ModifierKey.LeftShift | ModifierKey.RightShift)) != 0;
     public bool Control => (held & (ModifierKey.LeftControl | ModifierKey.RightControl)) != 0;
+    public bool Alt => (held & (ModifierKey.LeftAlt | ModifierKey.RightAlt)) != 0;
+
+    public SelectionMode ActiveMode(bool liveControl, bool liveAlt) => (liveControl, liveAlt) switch
+    {
+        (true, false) when Control => SelectionMode.Lookup,
+        (false, true) when Alt => SelectionMode.Writing,
+        _ => SelectionMode.None // Suppress Ctrl+Alt (including AltGr), even if raw input is queued.
+    };
 
     public KeyAction? OnPacket(ushort key, ushort scanCode, ushort flags)
     {
@@ -33,7 +41,7 @@ public sealed class SelectionModifiers(ModifierKey held)
             return null;
         }
         if (released) return null;
-        var alternate = (held & (ModifierKey.LeftAlt | ModifierKey.RightAlt | ModifierKey.LeftWindows | ModifierKey.RightWindows)) != 0;
+        var alternate = Alt || (held & (ModifierKey.LeftWindows | ModifierKey.RightWindows)) != 0;
         return SelectionKeys.Classify(key, Shift, Control, alternate);
     }
 }

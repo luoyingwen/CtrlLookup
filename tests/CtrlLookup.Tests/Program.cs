@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using CtrlLookup.Core;
 using CtrlLookup.Dictionary;
@@ -18,6 +19,59 @@ var cases = new (string Name, Action Run)[]
         foreach (var value in new[] { "next week", "week\nend", "中文", "http://example.com", "example.com", "foo_bar",
             "week2", "--word", "well--known", "a-'b", "", new string('a', 49) })
             Equal<string?>(null, EnglishHeadword.FromSelection(value));
+    }),
+    ("writing mode distinguishes an English word from other selections", () =>
+    {
+        Equal<WritingQuery?>(new(WritingTask.Spelling, "(ReCieve!)"), WritingQuery.FromSelection("  (ReCieve!)\r\n"));
+        Equal<WritingQuery?>(new(WritingTask.Spelling, "Well-Known"), WritingQuery.FromSelection("Well-Known"));
+        Equal<WritingQuery?>(new(WritingTask.Spelling, "Don’t"), WritingQuery.FromSelection("Don’t"));
+        Equal<WritingQuery?>(new(WritingTask.Polish, "Please\nadvise."), WritingQuery.FromSelection("Please\nadvise."));
+        Equal<WritingQuery?>(new(WritingTask.Polish, "电脑"), WritingQuery.FromSelection("电脑"));
+        Equal<WritingQuery?>(new(WritingTask.Polish, "Bonjour à tous"), WritingQuery.FromSelection("Bonjour à tous"));
+        Equal<WritingQuery?>(null, WritingQuery.FromSelection(" https://example.com/path "));
+        Equal<WritingQuery?>(null, WritingQuery.FromSelection(" \t\r\n "));
+        var prefix = new string('a', 1199);
+        Equal<WritingQuery?>(new(WritingTask.Polish, prefix), WritingQuery.FromSelection(prefix + "🙂 word"));
+    }),
+    ("LLM writing requests use separate prompts and never reuse translation results", () =>
+    {
+        var handler = new RecordingHandler();
+        using var client = LlmClient.Load("https://llm.example/chat/completions", "demo", null, "", handler)!;
+        var word = WritingQuery.FromSelection("recieve")!.Value;
+        var lookup = DictionaryQuery.FromSelection(word.Text)!.Value;
+        handler.ResponseJson = """{"choices":[{"message":{"content":"接收"}}]}""";
+        Equal("接收", client.Translate(lookup));
+        handler.ResponseJson = """{"choices":[{"message":{"content":"1. receive\n- receiver\nreceived\nreceives\nreceiving\nextra"}}]}""";
+        Equal("receive\nreceiver\nreceived\nreceives\nreceiving", client.Assist(word));
+        Equal(2, handler.Calls);
+        AssertPrompt("spelling corrections", "recieve");
+
+        var passage = WritingQuery.FromSelection("请尽快回我\n谢谢")!.Value;
+        handler.ResponseJson = """{"choices":[{"message":{"content":"请尽快回复。\r\n谢谢！"}}]}""";
+        Equal("请尽快回复。\n谢谢！", client.Assist(passage));
+        Equal(3, handler.Calls);
+        AssertPrompt("original language", passage.Text);
+        Equal("接收", client.Translate(lookup));
+        Equal(3, handler.Calls);
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        Equal<string?>(null, client.Assist(passage, cancellation.Token));
+        Equal(3, handler.Calls);
+        handler.ResponseJson = """{"choices":[{"message":{"content":" "}}]}""";
+        Equal<string?>(null, client.Assist(passage)); // Do not reuse the prior writing result.
+        handler.Status = HttpStatusCode.ServiceUnavailable;
+        Equal<string?>(null, client.Assist(word));
+
+        void AssertPrompt(string instruction, string input)
+        {
+            using var json = JsonDocument.Parse(handler.Body!);
+            var messages = json.RootElement.GetProperty("messages");
+            Equal("system", messages[0].GetProperty("role").GetString());
+            Equal(true, messages[0].GetProperty("content").GetString()!.Contains(instruction, StringComparison.Ordinal));
+            Equal("user", messages[1].GetProperty("role").GetString());
+            Equal(input, messages[1].GetProperty("content").GetString());
+        }
     }),
     ("offline dictionary import and lookup retain two glosses and preserve an installed database on failure", () =>
     {
@@ -213,18 +267,18 @@ var cases = new (string Name, Action Run)[]
         try
         {
             File.WriteAllText(settings, """{ "endpoint": "https://file.example/v1/chat/completions", "model": "file-model", "apiKey": "file-key" }""");
-            Equal<LlmTranslator?>(null, LlmTranslator.Load("ftp://explicit.example/v1", "explicit", null, settings));
-            Equal<LlmTranslator?>(null, LlmTranslator.Load(null, null, null, Path.Combine(temp, "missing.json")));
+            Equal<LlmClient?>(null, LlmClient.Load("ftp://explicit.example/v1", "explicit", null, settings));
+            Equal<LlmClient?>(null, LlmClient.Load(null, null, null, Path.Combine(temp, "missing.json")));
             File.WriteAllText(settings, "{");
-            Equal<LlmTranslator?>(null, LlmTranslator.Load(null, null, null, settings));
+            Equal<LlmClient?>(null, LlmClient.Load(null, null, null, settings));
             File.WriteAllText(settings, """{ "endpoint": "https://file.example/v1/chat/completions", "model": "file-model", "apiKey": "file-key" }""");
-            using (var fromFile = LlmTranslator.Load(" ", null, null, settings))
+            using (var fromFile = LlmClient.Load(" ", null, null, settings))
                 Equal(true, fromFile is not null);
 
             File.WriteAllText(englishSource, "word,translation\nweek,星期\n");
             Equal(1, DictionaryBuilder.Build(englishSource, english));
             var dictionaries = new OfflineDictionaries(english, Path.Combine(temp, "missing-zh.sqlite"));
-            using var translator = LlmTranslator.Load("https://llm.example/v1/chat/completions", "demo", "secret", settings, handler);
+            using var translator = LlmClient.Load("https://llm.example/v1/chat/completions", "demo", "secret", settings, handler);
             Equal(true, translator is not null);
             var known = new DictionaryQuery(LookupDirection.EnglishToChinese, "week");
             var missing = new DictionaryQuery(LookupDirection.EnglishToChinese, "xyzzy");
@@ -254,7 +308,7 @@ var cases = new (string Name, Action Run)[]
             Equal("an unlisted word", translator.Translate(retry));
             Equal(3, handler.Calls);
 
-            using var deepseek = LlmTranslator.Load("https://api.deepseek.com/chat/completions", "deepseek-flash", "secret", settings, handler);
+            using var deepseek = LlmClient.Load("https://api.deepseek.com/chat/completions", "deepseek-flash", "secret", settings, handler);
             handler.ResponseJson = """{"choices":[{"message":{"content":"无意义词","reasoning_content":"ignored"}}]}""";
             Equal("无意义词", deepseek!.Translate(new DictionaryQuery(LookupDirection.EnglishToChinese, "qqqq")));
             Equal(true, handler.Body!.Contains("\"thinking\":{\"type\":\"disabled\"}", StringComparison.Ordinal));
@@ -266,7 +320,7 @@ var cases = new (string Name, Action Run)[]
             Equal(false, handler.Body.Contains("two short dictionary", StringComparison.Ordinal));
 
             var localHandler = new RecordingHandler { ResponseJson = """{"choices":[]}""" };
-            using var local = LlmTranslator.Load("http://127.0.0.1:9/v1/chat/completions", "local", " ", settings, localHandler);
+            using var local = LlmClient.Load("http://127.0.0.1:9/v1/chat/completions", "local", " ", settings, localHandler);
             var calls = localHandler.Calls;
             Equal<string?>(null, local!.Translate(new DictionaryQuery(LookupDirection.EnglishToChinese, "blank")));
             Equal(calls + 1, localHandler.Calls);
@@ -285,7 +339,7 @@ var cases = new (string Name, Action Run)[]
         Action<SelectionCycle>[] interruptions =
         [
             cycle => cycle.LeftDown(1, new(30, 30), false, 200),
-            cycle => { cycle.SetActivationHeld(false); cycle.SetActivationHeld(true); },
+            cycle => { cycle.SetMode(SelectionMode.None); cycle.SetMode(SelectionMode.Lookup); },
             cycle => { cycle.SetForeground(2); cycle.SetForeground(1); },
             cycle => cycle.Dismiss()
         ];
@@ -303,13 +357,13 @@ var cases = new (string Name, Action Run)[]
             Equal(false, cycle.CanEnrich(previous));
             cycle.Advance(60_000);
             Equal(true, cycle.CanEnrich(current));
-            cycle.SetActivationHeld(false);
+            cycle.SetMode(SelectionMode.None);
             Equal(false, cycle.CanEnrich(current));
         }
     }),
     ("a drag qualifies when activation is held before the button is released", () =>
     {
-        var cycle = Cycle(activationHeld: false);
+        var cycle = Cycle(SelectionMode.None);
         var start = new PixelPoint(20, 20);
         var end = new PixelPoint(80, 20);
         cycle.LeftDown(1, start, false, 10);
@@ -321,26 +375,26 @@ var cases = new (string Name, Action Run)[]
         Equal(false, cycle.NeedsPolling);
 
         cycle.LeftDown(1, start, false, 350);
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.Lookup);
         cycle.LeftUp(end, 380);
         var late = cycle.Advance(412)!.Value;
         Equal(SelectionGesture.Mouse, late.Gesture);
         Equal(start, late.Start);
         Equal(end, late.End);
-        cycle.SetActivationHeld(false);
+        cycle.SetMode(SelectionMode.None);
 
         cycle.LeftDown(1, start, false, 500);
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.Lookup);
         cycle.LeftUp(start, 520);
         Equal<Probe?>(null, cycle.Advance(570));
-        cycle.SetActivationHeld(false);
+        cycle.SetMode(SelectionMode.None);
         cycle.LeftDown(1, start, false, 600);
-        cycle.SetActivationHeld(true);
-        cycle.SetActivationHeld(false);
+        cycle.SetMode(SelectionMode.Lookup);
+        cycle.SetMode(SelectionMode.None);
         cycle.LeftUp(end, 640);
         Equal<Probe?>(null, cycle.Advance(690));
 
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.Lookup);
         cycle.LeftDown(1, start, false, 750);
         cycle.LeftUp(end, 780);
         Equal(SelectionGesture.Mouse, cycle.Advance(812)!.Value.Gesture);
@@ -349,13 +403,13 @@ var cases = new (string Name, Action Run)[]
     {
         var cycle = Cycle();
         cycle.KeyDown(KeyAction.Selection, 0);
-        cycle.SetActivationHeld(false);
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.None);
+        cycle.SetMode(SelectionMode.Lookup);
         Equal<Probe?>(null, cycle.Advance(52));
 
         var inFlight = KeyProbe(cycle, 100);
-        cycle.SetActivationHeld(false);
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.None);
+        cycle.SetMode(SelectionMode.Lookup);
         Equal(false, cycle.Complete(inFlight, true, 200));
         Equal(false, cycle.NeedsPolling);
     }),
@@ -367,10 +421,10 @@ var cases = new (string Name, Action Run)[]
         Click(cycle, 100, point);
         var probe = cycle.Advance(152)!.Value;
         Equal(true, cycle.Complete(probe, true, 175));
-        cycle.SetActivationHeld(false);
+        cycle.SetMode(SelectionMode.None);
         Equal(false, cycle.Visible);
         Equal(false, cycle.NeedsPolling);
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.Lookup);
         Click(cycle, 240, point);
         Equal<Probe?>(null, cycle.Advance(292));
     }),
@@ -584,6 +638,54 @@ var cases = new (string Name, Action Run)[]
         keys.OnPacket(0x12, 0, 2);
         Equal<KeyAction?>(KeyAction.Dismiss, keys.OnPacket(0x25, 0, 0));
     }),
+    ("either Alt activates writing, but Ctrl+Alt and missed releases do not", () =>
+    {
+        var keys = new SelectionModifiers(0);
+        Equal(SelectionMode.None, keys.ActiveMode(false, true)); // Waiting for the raw Alt down packet.
+        keys.OnPacket(0x12, 0x38, 0); // Left Alt.
+        Equal(SelectionMode.Writing, keys.ActiveMode(false, true));
+        keys.OnPacket(0x12, 0x38, 2); // Right Alt.
+        keys.OnPacket(0x12, 0x38, 1); // Release Left Alt first.
+        Equal(SelectionMode.Writing, keys.ActiveMode(false, true));
+        Equal(SelectionMode.None, keys.ActiveMode(false, false)); // Physical key-up before the packet arrives.
+        Equal(SelectionMode.None, keys.ActiveMode(true, true)); // Ctrl is already physically down.
+        keys.OnPacket(0x11, 0x1D, 0);
+        Equal(SelectionMode.None, keys.ActiveMode(true, true));
+        keys.OnPacket(0x12, 0x38, 3);
+        Equal(SelectionMode.Lookup, keys.ActiveMode(true, false));
+        keys.OnPacket(0x11, 0x1D, 1);
+        Equal(SelectionMode.None, keys.ActiveMode(false, false));
+    }),
+    ("Alt qualifies a drag at release and switching modes invalidates pending results", () =>
+    {
+        var cycle = Cycle(SelectionMode.None);
+        cycle.LeftDown(1, new(10, 10), false, 0);
+        cycle.SetMode(SelectionMode.Writing);
+        cycle.LeftUp(new(30, 10), 10);
+        var writing = cycle.Advance(42)!.Value;
+        Equal(SelectionMode.Writing, writing.Mode);
+        Equal(true, cycle.Complete(writing, true, 50));
+        Equal(true, cycle.CanEnrich(writing));
+
+        cycle.SetMode(SelectionMode.Lookup);
+        Equal(false, cycle.Visible);
+        Equal(false, cycle.CanEnrich(writing));
+        var lookup = KeyProbe(cycle, 100);
+        Equal(SelectionMode.Lookup, lookup.Mode);
+        cycle.SetMode(SelectionMode.Writing);
+        Equal(false, cycle.Complete(lookup, true, 160));
+        cycle.KeyDown(KeyAction.Selection, 200);
+        Equal<Probe?>(null, cycle.Advance(260)); // Alt does not commandeer keyboard shortcuts.
+
+        Click(cycle, 300, new(10, 10));
+        Click(cycle, 400, new(10, 10));
+        var doubleClick = cycle.Advance(452)!.Value;
+        Equal(SelectionMode.Writing, doubleClick.Mode);
+        Equal(true, cycle.Complete(doubleClick, true, 470));
+        cycle.SetMode(SelectionMode.None);
+        Equal(false, cycle.Visible);
+        Equal(false, cycle.CanEnrich(doubleClick));
+    }),
     ("preview stays visible while Ctrl is held and hides as soon as it is released", () =>
     {
         var cycle = Cycle();
@@ -592,10 +694,10 @@ var cases = new (string Name, Action Run)[]
         cycle.Advance(60_000);
         Equal(true, cycle.Visible);
         Equal(true, cycle.NeedsPolling); // Still poll the physical Ctrl state.
-        cycle.SetActivationHeld(false);
+        cycle.SetMode(SelectionMode.None);
         Equal(false, cycle.Visible);
         Equal(false, cycle.NeedsPolling);
-        cycle.SetActivationHeld(true);
+        cycle.SetMode(SelectionMode.Lookup);
         Equal(false, cycle.Visible);
     }),
     ("late and missing provider results never show", () =>
@@ -666,9 +768,9 @@ foreach (var (name, run) in cases)
 Console.WriteLine($"{cases.Length - failures}/{cases.Length} checks passed.");
 return failures == 0 ? 0 : 1;
 
-static SelectionCycle Cycle(bool activationHeld = true)
+static SelectionCycle Cycle(SelectionMode mode = SelectionMode.Lookup)
 {
-    var cycle = new SelectionCycle(500, new(4, 4), new(4, 4), activationHeld);
+    var cycle = new SelectionCycle(500, new(4, 4), new(4, 4), mode);
     cycle.SetForeground(1);
     return cycle;
 }
