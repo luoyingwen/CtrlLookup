@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using CtrlLookup.Core;
 using CtrlLookup.Dictionary;
 
 namespace CtrlLookup;
+
+internal sealed record EnrichmentResult(string Text, IReadOnlyList<TextHighlight>? Highlights = null);
 
 /// <summary>Best-effort lookup and writing assistance, with at most one queued selection.</summary>
 internal sealed class SelectionEnrichment : IDisposable
@@ -12,13 +15,13 @@ internal sealed class SelectionEnrichment : IDisposable
     private readonly OfflineDictionaries _dictionaries = new(OfflineDictionary.DefaultPath, OfflineDictionary.ChinesePath);
     private readonly LlmClient? _client = LlmClient.TryCreate();
     private readonly LookupHistory _history = new(LookupHistory.DefaultPath);
-    private readonly Action<Probe, string> _completed;
+    private readonly Action<Probe, EnrichmentResult> _completed;
     private (Probe Probe, string Text)? _pending;
     private Probe? _current;
     private CancellationTokenSource? _call;
     private bool _stopped;
 
-    public SelectionEnrichment(Action<Probe, string> completed)
+    public SelectionEnrichment(Action<Probe, EnrichmentResult> completed)
     {
         _completed = completed;
         new Thread(Loop) { IsBackground = true, Name = "CtrlLookup.Enrichment" }.Start();
@@ -98,16 +101,19 @@ internal sealed class SelectionEnrichment : IDisposable
         finally { _client?.Dispose(); }
     }
 
-    private string? Enrich(SelectionMode mode, string text, CancellationToken cancellation)
+    private EnrichmentResult? Enrich(SelectionMode mode, string text, CancellationToken cancellation)
     {
         if (cancellation.IsCancellationRequested) return null;
         if (mode == SelectionMode.Writing)
-            return _client is not null && WritingQuery.FromSelection(text) is { } request
-                ? _client.Assist(request, cancellation) : null;
+        {
+            if (_client is null || WritingQuery.FromSelection(text) is not { } request ||
+                _client.Assist(request, cancellation) is not { } reply) return null;
+            return new(reply, request.Task == WritingTask.Polish ? PolishDiff.FindHighlights(request.Text, reply) : null);
+        }
 
         if (mode != SelectionMode.Lookup || DictionaryQuery.FromSelection(text) is not { } query) return null;
         var gloss = DictionaryTranslation.Lookup(_dictionaries, _client, query, cancellation);
         _history.Record(query, gloss);
-        return gloss;
+        return gloss is null ? null : new(gloss);
     }
 }

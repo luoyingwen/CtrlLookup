@@ -167,7 +167,7 @@ public partial class App : System.Windows.Application
         Pump();
     }
 
-    private void CompleteEnrichment(Probe probe, string result)
+    private void CompleteEnrichment(Probe probe, EnrichmentResult result)
     {
         if (!_active) return;
         Pump();

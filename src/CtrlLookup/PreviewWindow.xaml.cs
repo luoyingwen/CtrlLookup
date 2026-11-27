@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Documents;
@@ -13,6 +14,7 @@ public partial class PreviewWindow : Window
     private static readonly SolidColorBrush Paper = Brush(0xF9, 0xFD, 0xFD);
     private static readonly SolidColorBrush Ink = Brush(0x12, 0x32, 0x43);
     private static readonly SolidColorBrush Edge = Brush(0x6F, 0x94, 0x9C);
+    private static readonly SolidColorBrush EditHighlight = Brush(0xFF, 0xEB, 0xAD);
     private readonly nint _hwnd;
     private CardPlacement? _placement;
 
@@ -59,24 +61,41 @@ public partial class PreviewWindow : Window
         return true;
     }
 
-    internal void ShowResult(string result, SelectionMode mode)
+    internal void ShowResult(EnrichmentResult result, SelectionMode mode)
     {
         if (!IsVisible || _placement is not { } card) return;
         var original = Body.Text;
         if (mode == SelectionMode.Writing)
         {
             // A long original can fill the card, leaving no space for the edited text below it.
-            Body.Text = result;
+            if (result.Highlights is { Count: > 0 } edits) ShowPolishedText(result.Text, edits);
+            else Body.Text = result.Text;
         }
         else
         {
             Body.Inlines.Clear();
             Body.Inlines.Add(new Run(original) { FontWeight = FontWeights.SemiBold });
             Body.Inlines.Add(new LineBreak());
-            Body.Inlines.Add(new Run(result));
+            Body.Inlines.Add(new Run(result.Text));
         }
         // Reuse the current monitor and anchor without hiding or re-showing the window.
         if (!Move(Measure(card))) Body.Text = original;
+    }
+
+    private void ShowPolishedText(string text, IReadOnlyList<TextHighlight> edits)
+    {
+        Body.Inlines.Clear();
+        var cursor = 0;
+        foreach (var highlight in edits)
+        {
+            if (cursor < highlight.Start) Body.Inlines.Add(new Run(text[cursor..highlight.Start]));
+            var edit = new Run(text.Substring(highlight.Start, highlight.Length)) { FontWeight = FontWeights.SemiBold };
+            if (SystemParameters.HighContrast) edit.TextDecorations = TextDecorations.Underline;
+            else edit.Background = EditHighlight;
+            Body.Inlines.Add(edit);
+            cursor = highlight.Start + highlight.Length;
+        }
+        if (cursor < text.Length) Body.Inlines.Add(new Run(text[cursor..]));
     }
 
     private PixelRect Measure(CardPlacement card)

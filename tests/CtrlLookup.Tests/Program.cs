@@ -33,6 +33,25 @@ var cases = new (string Name, Action Run)[]
         var prefix = new string('a', 1199);
         Equal<WritingQuery?>(new(WritingTask.Polish, prefix), WritingQuery.FromSelection(prefix + "🙂 word"));
     }),
+    ("polish highlights additions and replacements but not unchanged words or deletions", () =>
+    {
+        Equal("6:16:, reply promptly", Edits("Please respond very soon.", "Please, reply promptly."));
+        Equal("13:2:to", Edits("Please reply me soon.", "Please reply to me soon."));
+        Equal("0:6:Please|25:10:this week.", Edits("please send the document now!", "Please send the document this week."));
+        Equal("0:6:Please|12:2:.!", Edits("please reply?", "Please reply.!"));
+        Equal("", Edits("Please reply very soon.", "Please reply soon."));
+        Equal("", Edits("Please reply.\nThank you!", "Please   reply.\r\n\r\nThank you!"));
+        Equal("", Edits("Please reply.", "Please reply."));
+    }),
+    ("polish highlights preserve line breaks and Unicode graphemes", () =>
+    {
+        Equal("2:5:Hello|11:6:friend", Edits("Hi\n buddy!", "  Hello\r\n  friend!"));
+        Equal("3:1:答", Edits("请尽快回复。", "请尽快答复。"));
+        Equal("0:3:𠮷字", Edits("大吉。", "𠮷字。"));
+        Equal("5:7:👩🏽‍💻", Edits("Hello👋!", "Hello👩🏽‍💻!"));
+        Equal("0:5:café", Edits("cafe only", "café only"));
+        Equal("", Edits("old", new string('x', PreviewText.MaximumLength + 1)));
+    }),
     ("LLM writing requests use separate prompts and never reuse translation results", () =>
     {
         var handler = new RecordingHandler();
@@ -792,6 +811,9 @@ static void Equal<T>(T expected, T actual)
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
         throw new InvalidOperationException($"Expected {expected}, got {actual}.");
 }
+
+static string Edits(string before, string after) => string.Join('|', PolishDiff.FindHighlights(before, after)
+    .Select(edit => $"{edit.Start}:{edit.Length}:{after.Substring(edit.Start, edit.Length)}"));
 
 sealed class RecordingHandler : HttpMessageHandler
 {
